@@ -1,0 +1,18 @@
+[Unit]
+Description=Outline wiki service
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User={{ outline_system_user }}
+Group={{ outline_system_user }}
+WorkingDirectory={{ outline_install_dir }}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile={{ outline_install_dir }}/.env
+ExecStart=/usr/bin/env yarn start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

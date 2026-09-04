@@ -1,0 +1,20 @@
+outline_repo_url: "https://github.com/outline/outline.git"
+outline_repo_version: "main"
+outline_install_dir: "/opt/outline/app"
+outline_system_user: "outline"
+outline_port: 3000
+outline_url: "http://203.0.113.10:3000"
+outline_allowed_hosts: "203.0.113.10"
+outline_secret_key: "troque-por-um-secret-key-forte"
+outline_utils_secret: "troque-por-um-utils-secret-forte"
+outline_bucket_name: "troque-pelo-output-do-terraform"
+outline_google_credentials_path: "/etc/outline/gcp-service-account.json"
+outline_google_credentials_json: |
+  {
+    "type": "service_account",
+    "project_id": "meu-projeto-gcp"
+  }
+
+outline_postgres_db: "outline"
+outline_postgres_user: "outline"
+outline_postgres_password: "troque-esta-senha"

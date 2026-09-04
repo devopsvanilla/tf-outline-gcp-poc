@@ -1,0 +1,163 @@
+---
+- name: Configurar VM do Outline
+  hosts: outline
+  become: true
+  vars:
+    outline_service_name: outline
+    outline_env_file: "{{ outline_install_dir }}/.env"
+  tasks:
+    - name: Instalar pacotes base
+      ansible.builtin.apt:
+        name:
+          - acl
+          - build-essential
+          - ca-certificates
+          - curl
+          - git
+          - nodejs
+          - npm
+          - postgresql
+          - postgresql-contrib
+          - redis-server
+        update_cache: true
+        state: present
+
+    - name: Instalar Yarn globalmente
+      ansible.builtin.command: npm install --global yarn
+      changed_when: false
+
+    - name: Garantir usuário de sistema do Outline
+      ansible.builtin.user:
+        name: "{{ outline_system_user }}"
+        system: true
+        shell: /bin/bash
+        create_home: true
+
+    - name: Garantir diretórios do Outline
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ outline_system_user }}"
+        group: "{{ outline_system_user }}"
+        mode: "0755"
+      loop:
+        - "{{ outline_install_dir | dirname }}"
+        - "/etc/outline"
+
+    - name: Habilitar e iniciar PostgreSQL
+      ansible.builtin.service:
+        name: postgresql
+        enabled: true
+        state: started
+
+    - name: Habilitar e iniciar Redis
+      ansible.builtin.service:
+        name: redis-server
+        enabled: true
+        state: started
+
+    - name: Verificar se o usuário PostgreSQL do Outline existe
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -tAc
+          - "SELECT 1 FROM pg_roles WHERE rolname='{{ outline_postgres_user }}'"
+      become_user: postgres
+      register: outline_postgres_user_exists
+      changed_when: false
+
+    - name: Criar usuário PostgreSQL do Outline
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -c
+          - "CREATE USER {{ outline_postgres_user }} WITH PASSWORD '{{ outline_postgres_password | replace(\"'\", \"''\") }}';"
+      become_user: postgres
+      when: outline_postgres_user_exists.stdout | trim != "1"
+
+    - name: Garantir senha do usuário PostgreSQL do Outline
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -c
+          - "ALTER USER {{ outline_postgres_user }} WITH PASSWORD '{{ outline_postgres_password | replace(\"'\", \"''\") }}';"
+      become_user: postgres
+      changed_when: false
+
+    - name: Verificar se o database do Outline existe
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -tAc
+          - "SELECT 1 FROM pg_database WHERE datname='{{ outline_postgres_db }}'"
+      become_user: postgres
+      register: outline_postgres_db_exists
+      changed_when: false
+
+    - name: Criar database do Outline
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -c
+          - "CREATE DATABASE {{ outline_postgres_db }} OWNER {{ outline_postgres_user }};"
+      become_user: postgres
+      when: outline_postgres_db_exists.stdout | trim != "1"
+
+    - name: Clonar repositório do Outline
+      ansible.builtin.git:
+        repo: "{{ outline_repo_url }}"
+        dest: "{{ outline_install_dir }}"
+        version: "{{ outline_repo_version }}"
+        update: true
+      become_user: "{{ outline_system_user }}"
+
+    - name: Gravar credencial JSON do Cloud Storage
+      ansible.builtin.copy:
+        content: "{{ outline_google_credentials_json }}"
+        dest: "{{ outline_google_credentials_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Gerar arquivo .env do Outline
+      ansible.builtin.template:
+        src: templates/outline.env.j2
+        dest: "{{ outline_env_file }}"
+        owner: "{{ outline_system_user }}"
+        group: "{{ outline_system_user }}"
+        mode: "0600"
+
+    - name: Instalar dependências do Outline
+      ansible.builtin.command: yarn install --frozen-lockfile
+      args:
+        chdir: "{{ outline_install_dir }}"
+      become_user: "{{ outline_system_user }}"
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+
+    - name: Gerar build do Outline
+      ansible.builtin.command: yarn build
+      args:
+        chdir: "{{ outline_install_dir }}"
+      become_user: "{{ outline_system_user }}"
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+
+    - name: Instalar unidade systemd do Outline
+      ansible.builtin.template:
+        src: templates/outline.service.j2
+        dest: "/etc/systemd/system/{{ outline_service_name }}.service"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Recarregar systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Habilitar e iniciar Outline
+      ansible.builtin.service:
+        name: "{{ outline_service_name }}"
+        enabled: true
+        state: started

@@ -1,0 +1,6 @@
+---
+# ==============================================================================
+# Playbook Mestre: Execução completa do Outline e do diagrams.net (draw.io)
+# ==============================================================================
+- import_playbook: playbook.yml
+- import_playbook: playbook-drawio.yml

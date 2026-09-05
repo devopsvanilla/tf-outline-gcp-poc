@@ -1,0 +1,165 @@
+---
+- name: Configurar Servidor diagrams.net (draw.io) na VM GCP (Free Tier e2-micro)
+  hosts: drawio
+  become: true
+
+  tasks:
+    # -------------------------------------------------------------------------
+    # 1. Configuração de Swap (Essencial para estabilidade na e2-micro)
+    # -------------------------------------------------------------------------
+    - name: Verificar se o arquivo de swap já existe
+      ansible.builtin.stat:
+        path: /swapfile
+      register: swapfile_stat
+
+    - name: Criar arquivo de swap de 2 GB
+      ansible.builtin.command: "fallocate -l {{ drawio_swap_size_mb | default(2048) }}M /swapfile"
+      when: not swapfile_stat.stat.exists
+
+    - name: Definir permissões do swapfile
+      ansible.builtin.file:
+        path: /swapfile
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Formatar arquivo de swap
+      ansible.builtin.command: mkswap /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Ativar swapfile
+      ansible.builtin.command: swapon /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Adicionar swapfile ao fstab
+      ansible.builtin.mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        state: present
+
+    - name: Ajustar swappiness do sistema para 10
+      ansible.posix.sysctl:
+        name: vm.swappiness
+        value: "10"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-swap.conf
+        reload: true
+
+    - name: Configurar precedência IPv4 no resolver do sistema (/etc/gai.conf)
+      ansible.builtin.lineinfile:
+        path: /etc/gai.conf
+        regexp: '^#?\s*precedence\s+::ffff:0:0/96\s+100'
+        line: 'precedence ::ffff:0:0/96  100'
+        state: present
+
+    # -------------------------------------------------------------------------
+    # 2. Instalação de Pacotes Base (Nginx, Git, Certbot)
+    # -------------------------------------------------------------------------
+    - name: Instalar pré-requisitos do sistema
+      ansible.builtin.apt:
+        name:
+          - acl
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - git
+          - gnupg
+          - nginx
+          - certbot
+          - python3-certbot-nginx
+        update_cache: true
+        state: present
+
+    # -------------------------------------------------------------------------
+    # 3. Deploy do diagrams.net (draw.io) Nativo no Sistema Operacional
+    # -------------------------------------------------------------------------
+    - name: Configurar safe.directory no git para o diretório de instalação
+      ansible.builtin.command: git config --system --add safe.directory "{{ drawio_install_dir | default('/var/www/drawio') }}"
+      changed_when: false
+
+    - name: Clonar repositório do diagrams.net (shallow clone para máxima performance)
+      ansible.builtin.git:
+        repo: "{{ drawio_repo_url | default('https://github.com/jgraph/drawio.git') }}"
+        dest: "{{ drawio_install_dir | default('/var/www/drawio') }}"
+        version: "{{ drawio_repo_version | default('dev') }}"
+        depth: 1
+        single_branch: true
+        update: true
+
+
+    - name: Ajustar permissões dos arquivos estáticos para o usuário www-data
+      ansible.builtin.file:
+        path: "{{ drawio_install_dir | default('/var/www/drawio') }}"
+        owner: www-data
+        group: www-data
+        recurse: true
+
+    # -------------------------------------------------------------------------
+    # 4. Configuração do Servidor Web Nginx
+    # -------------------------------------------------------------------------
+    - name: Instalar configuração do Nginx para o diagrams.net
+      ansible.builtin.template:
+        src: templates/nginx-drawio.conf.j2
+        dest: /etc/nginx/sites-available/drawio
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Habilitar site do diagrams.net no Nginx
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/drawio
+        dest: /etc/nginx/sites-enabled/drawio
+        state: link
+
+    - name: Desabilitar configuração padrão do Nginx
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Testar sintaxe da configuração do Nginx
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Reiniciar e habilitar serviço Nginx
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: restarted
+
+    # -------------------------------------------------------------------------
+    # 5. Emissão de Certificado SSL via Let's Encrypt / Certbot (Opcional)
+    # -------------------------------------------------------------------------
+    - name: Obter certificado SSL via Certbot para o FQDN e configurar HTTPS no Nginx
+      ansible.builtin.command: >
+        certbot --nginx
+        -d {{ drawio_domain }}
+        --non-interactive
+        --agree-tos
+        -m {{ drawio_certbot_email }}
+        --redirect
+      when:
+        - drawio_enable_ssl | default(false) | bool
+        - drawio_domain is defined
+        - drawio_domain != "_"
+        - drawio_certbot_email is defined
+        - drawio_certbot_email != ""
+      ignore_errors: true
+      register: certbot_result
+      tags:
+        - ssl
+        - certbot
+
+    - name: "Exibir aviso caso a emissão do certificado Certbot tenha falhado (ex: propagação de DNS ou Cloudflare)"
+      ansible.builtin.debug:
+        msg: >
+          Aviso: A emissão do certificado via Certbot falhou ou o domínio ainda não está apontando diretamente para a VM.
+          Se estiver usando o Cloudflare com Proxy ativo (nuvem laranja), o SSL já é fornecido pelo próprio Cloudflare.
+          Se quiser emitir o Let's Encrypt diretamente na VM, altere o registro no Cloudflare para 'DNS Only' (nuvem cinza)
+          e reexecute: ansible-playbook -i inventory.ini playbook-drawio.yml --tags ssl
+      when:
+        - certbot_result is defined
+        - certbot_result.failed is defined
+        - certbot_result.failed
+

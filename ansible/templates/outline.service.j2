@@ -1,5 +1,5 @@
 [Unit]
-Description=Outline wiki service
+Description=Outline Knowledge Base wiki service
 After=network.target postgresql.service redis-server.service
 Wants=postgresql.service redis-server.service
 
@@ -9,10 +9,14 @@ User={{ outline_system_user }}
 Group={{ outline_system_user }}
 WorkingDirectory={{ outline_install_dir }}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment="NODE_OPTIONS=--dns-result-order=ipv4first"
 EnvironmentFile={{ outline_install_dir }}/.env
-ExecStart=/usr/bin/env yarn start
+ExecStart=/usr/bin/node build/server/index.js
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target

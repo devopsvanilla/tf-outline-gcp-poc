@@ -1,39 +1,133 @@
 ---
-- name: Configurar VM do Outline
+- name: Configurar Servidor Outline na VM GCP (Free Tier e2-micro)
   hosts: outline
   become: true
   vars:
     outline_service_name: outline
     outline_env_file: "{{ outline_install_dir }}/.env"
+    outline_local_tarball_path: "{{ playbook_dir }}/{{ outline_local_build_tarball | default('files/outline-build.tar.gz') }}"
+
   tasks:
-    - name: Instalar pacotes base
+    # -------------------------------------------------------------------------
+    # 1. Configuração de Swap (Essencial para estabilidade nos 1GB da e2-micro)
+    # -------------------------------------------------------------------------
+    - name: Verificar se o arquivo de swap já existe
+      ansible.builtin.stat:
+        path: /swapfile
+      register: swapfile_stat
+
+    - name: Criar arquivo de swap de 4 GB
+      ansible.builtin.command: "fallocate -l {{ outline_swap_size_mb | default(4096) }}M /swapfile"
+      when: not swapfile_stat.stat.exists
+
+    - name: Definir permissões do swapfile
+      ansible.builtin.file:
+        path: /swapfile
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Formatar arquivo de swap
+      ansible.builtin.command: mkswap /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Ativar swapfile
+      ansible.builtin.command: swapon /swapfile
+      when: not swapfile_stat.stat.exists
+
+    - name: Adicionar swapfile ao fstab
+      ansible.builtin.mount:
+        name: none
+        src: /swapfile
+        fstype: swap
+        opts: sw
+        state: present
+
+    - name: Ajustar swappiness do sistema para 10
+      ansible.posix.sysctl:
+        name: vm.swappiness
+        value: "10"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-swap.conf
+        reload: true
+
+    - name: Configurar precedência IPv4 no resolver do sistema (/etc/gai.conf)
+      ansible.builtin.lineinfile:
+        path: /etc/gai.conf
+        regexp: '^#?\s*precedence\s+::ffff:0:0/96\s+100'
+        line: 'precedence ::ffff:0:0/96  100'
+        state: present
+
+    # -------------------------------------------------------------------------
+    # 2. Instalação de Pacotes Base e Repositório NodeSource (Node.js 20 LTS)
+    # -------------------------------------------------------------------------
+    - name: Instalar pré-requisitos de pacotes
       ansible.builtin.apt:
         name:
           - acl
+          - apt-transport-https
           - build-essential
           - ca-certificates
           - curl
           - git
-          - nodejs
-          - npm
+          - gnupg
+          - nginx
           - postgresql
           - postgresql-contrib
           - redis-server
+          - certbot
+          - python3-certbot-nginx
         update_cache: true
         state: present
 
-    - name: Instalar Yarn globalmente
-      ansible.builtin.command: npm install --global yarn
+    - name: Garantir diretório de keyrings do apt
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Baixar chave GPG do repositório NodeSource (Node 20)
+      ansible.builtin.get_url:
+        url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+        dest: /etc/apt/keyrings/nodesource.asc
+        mode: "0644"
+
+    - name: Adicionar repositório NodeSource Node.js 20.x
+      ansible.builtin.deb822_repository:
+        name: nodesource
+        types: deb
+        uris: https://deb.nodesource.com/node_20.x
+        suites: nodistro
+        components: main
+        signed_by: /etc/apt/keyrings/nodesource.asc
+        state: present
+
+    - name: Instalar Node.js 20 LTS
+      ansible.builtin.apt:
+        name: nodejs
+        state: latest
+        update_cache: true
+
+    - name: Habilitar Corepack para gerenciamento de versões do Yarn
+      ansible.builtin.command: corepack enable
       changed_when: false
 
-    - name: Garantir usuário de sistema do Outline
+    - name: Pré-ativar Yarn moderno com Corepack
+      ansible.builtin.command: corepack prepare yarn@4.11.0 --activate
+      changed_when: false
+
+    # -------------------------------------------------------------------------
+    # 3. Configuração de Usuário e Diretórios do Outline
+    # -------------------------------------------------------------------------
+    - name: Criar usuário de sistema do Outline
       ansible.builtin.user:
         name: "{{ outline_system_user }}"
         system: true
         shell: /bin/bash
+        home: "/home/{{ outline_system_user }}"
         create_home: true
 
-    - name: Garantir diretórios do Outline
+    - name: Garantir diretórios da aplicação
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
@@ -41,9 +135,12 @@
         group: "{{ outline_system_user }}"
         mode: "0755"
       loop:
-        - "{{ outline_install_dir | dirname }}"
-        - "/etc/outline"
+        - "{{ outline_install_dir }}"
+        - "/var/log/outline"
 
+    # -------------------------------------------------------------------------
+    # 4. Configuração dos Serviços de Banco (PostgreSQL) e Cache (Redis)
+    # -------------------------------------------------------------------------
     - name: Habilitar e iniciar PostgreSQL
       ansible.builtin.service:
         name: postgresql
@@ -103,47 +200,110 @@
       become_user: postgres
       when: outline_postgres_db_exists.stdout | trim != "1"
 
-    - name: Clonar repositório do Outline
+    # -------------------------------------------------------------------------
+    # 5. Obtenção do Código: Artefato Local (Host) OU Clone + Build na VM
+    # -------------------------------------------------------------------------
+    - name: Verificar se existe pacote de build local na estação de trabalho
+      ansible.builtin.stat:
+        path: "{{ outline_local_tarball_path }}"
+      delegate_to: localhost
+      become: false
+      register: local_build_stat
+
+    # Opção A: Descompactar build gerado no host de trabalho
+    - name: Transferir e descompactar build local do Outline para a VM
+      ansible.builtin.unarchive:
+        src: "{{ outline_local_tarball_path }}"
+        dest: "{{ outline_install_dir }}"
+        owner: "{{ outline_system_user }}"
+        group: "{{ outline_system_user }}"
+        remote_src: false
+      when: local_build_stat.stat.exists
+
+    - name: Instalar dependências da aplicação (se usando build local)
+      ansible.builtin.command: yarn install
+      args:
+        chdir: "{{ outline_install_dir }}"
+      become_user: "{{ outline_system_user }}"
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      when: local_build_stat.stat.exists
+
+    # Opção B: Clonar e compilar na própria VM (utilizando os 4GB de swap)
+    - name: Clonar repositório do Outline (quando sem build local)
       ansible.builtin.git:
         repo: "{{ outline_repo_url }}"
         dest: "{{ outline_install_dir }}"
         version: "{{ outline_repo_version }}"
         update: true
       become_user: "{{ outline_system_user }}"
+      when: not local_build_stat.stat.exists
 
-    - name: Gravar credencial JSON do Cloud Storage
-      ansible.builtin.copy:
-        content: "{{ outline_google_credentials_json }}"
-        dest: "{{ outline_google_credentials_path }}"
-        owner: root
-        group: root
-        mode: "0600"
-      no_log: true
-
-    - name: Gerar arquivo .env do Outline
-      ansible.builtin.template:
-        src: templates/outline.env.j2
-        dest: "{{ outline_env_file }}"
-        owner: "{{ outline_system_user }}"
-        group: "{{ outline_system_user }}"
-        mode: "0600"
-
-    - name: Instalar dependências do Outline
-      ansible.builtin.command: yarn install --frozen-lockfile
+    - name: Instalar todas as dependências do Outline (quando sem build local)
+      ansible.builtin.command: yarn install
       args:
         chdir: "{{ outline_install_dir }}"
       become_user: "{{ outline_system_user }}"
       environment:
         PATH: "/usr/local/bin:/usr/bin:/bin"
+      when: not local_build_stat.stat.exists
 
-    - name: Gerar build do Outline
+    - name: Compilar o Outline na VM com limite de heap aumentado (quando sem build local)
       ansible.builtin.command: yarn build
       args:
         chdir: "{{ outline_install_dir }}"
       become_user: "{{ outline_system_user }}"
       environment:
         PATH: "/usr/local/bin:/usr/bin:/bin"
+        NODE_OPTIONS: "--max-old-space-size=2048"
+      when: not local_build_stat.stat.exists
 
+    # -------------------------------------------------------------------------
+    # 6. Variáveis de Ambiente e Migrações do Banco de Dados
+    # -------------------------------------------------------------------------
+    - name: Gerar arquivo .env do Outline (apontando para o Cloud Storage S3)
+      ansible.builtin.template:
+        src: templates/outline.env.j2
+        dest: "{{ outline_env_file }}"
+        owner: "{{ outline_system_user }}"
+        group: "{{ outline_system_user }}"
+        mode: "0600"
+      notify: Reiniciar Outline
+      tags:
+        - config
+        - env
+
+    - name: Garantir arquivo .sequelizerc para execução do Sequelize CLI
+      ansible.builtin.copy:
+        dest: "{{ outline_install_dir }}/.sequelizerc"
+        owner: "{{ outline_system_user }}"
+        group: "{{ outline_system_user }}"
+        mode: "0644"
+        content: |
+          require("@dotenvx/dotenvx").config({
+            path: process.env.NODE_ENV === "test" ? ".env.test" : ".env",
+          });
+
+          var path = require('path');
+
+          module.exports = {
+            'config': path.resolve('server/config', 'database.js'),
+            'migrations-path': path.resolve('server', 'migrations'),
+            'models-path': path.resolve('server', 'models'),
+          }
+
+    - name: Executar migrações do banco de dados (yarn db:migrate)
+      ansible.builtin.command: yarn db:migrate
+      args:
+        chdir: "{{ outline_install_dir }}"
+      become_user: "{{ outline_system_user }}"
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+        NODE_ENV: "production"
+
+    # -------------------------------------------------------------------------
+    # 7. Configuração do Serviço Systemd
+    # -------------------------------------------------------------------------
     - name: Instalar unidade systemd do Outline
       ansible.builtin.template:
         src: templates/outline.service.j2
@@ -160,4 +320,63 @@
       ansible.builtin.service:
         name: "{{ outline_service_name }}"
         enabled: true
-        state: started
+        state: restarted
+
+    # -------------------------------------------------------------------------
+    # 8. Configuração do Proxy Reverso Nginx
+    # -------------------------------------------------------------------------
+    - name: Instalar configuração do Nginx para o Outline
+      ansible.builtin.template:
+        src: templates/nginx-outline.conf.j2
+        dest: /etc/nginx/sites-available/outline
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Habilitar site do Outline no Nginx
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/outline
+        dest: /etc/nginx/sites-enabled/outline
+        state: link
+
+    - name: Desabilitar configuração padrão do Nginx
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Testar configuração do Nginx
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Reiniciar e habilitar serviço Nginx
+      ansible.builtin.service:
+        name: nginx
+        enabled: true
+        state: restarted
+
+    # -------------------------------------------------------------------------
+    # 9. Configuração de SSL / HTTPS via Let's Encrypt / Certbot (Opcional)
+    # -------------------------------------------------------------------------
+    - name: Obter certificado SSL via Certbot para o FQDN e configurar HTTPS no Nginx
+      ansible.builtin.command: >
+        certbot --nginx
+        -d {{ outline_domain }}
+        --non-interactive
+        --agree-tos
+        -m {{ certbot_email }}
+        --redirect
+      when:
+        - enable_ssl | default(false) | bool
+        - outline_domain is defined
+        - outline_domain != "_"
+        - certbot_email is defined
+        - certbot_email != ""
+      tags:
+        - ssl
+        - certbot
+
+  handlers:
+    - name: Reiniciar Outline
+      ansible.builtin.service:
+        name: "{{ outline_service_name }}"
+        state: restarted

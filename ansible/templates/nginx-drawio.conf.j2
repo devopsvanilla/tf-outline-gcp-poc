@@ -1,0 +1,51 @@
+server {
+    listen 80;
+    listen [::]:80;
+
+    server_name {{ drawio_domain | default('_') }};
+
+    root {{ drawio_install_dir }}/src/main/webapp;
+    index index.html;
+
+    client_max_body_size 50M;
+
+    access_log /var/log/nginx/drawio-access.log;
+    error_log /var/log/nginx/drawio-error.log;
+
+    # Compressão Gzip para acelerar a entrega dos assets estáticos
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        application/json
+        application/javascript
+        application/xml
+        application/xml+rss
+        text/javascript
+        image/svg+xml;
+
+    # Permitir que o editor do diagrams.net seja embutido em iframes (ex: notas do Outline)
+    add_header Access-Control-Allow-Origin "*" always;
+    add_header Content-Security-Policy "frame-ancestors 'self' https://{{ outline_domain | default('*') }} https://*.devopsvanilla.com.br *" always;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Cache otimizado para bibliotecas de formas, stencils, fontes e scripts
+    location ~* \.(jpg|jpeg|gif|png|ico|cur|gz|svg|svgz|mp4|ogg|ogv|webm|htc|woff2|woff|ttf|eot)$ {
+        expires 30d;
+        add_header Cache-Control "public, no-transform";
+        add_header Access-Control-Allow-Origin "*" always;
+    }
+
+    location ~* \.(css|js)$ {
+        expires 7d;
+        add_header Cache-Control "public, no-transform";
+        add_header Access-Control-Allow-Origin "*" always;
+    }
+}

@@ -1,0 +1,176 @@
+---
+# ==============================================================================
+# Playbook: Reset e Reconfiguração do Outline Knowledge Base
+#
+# Uso padrão (Modo Automático - reseta e provisiona o Workspace imediatamente):
+#   ansible-playbook -i inventory.ini reset.yml
+#
+# Para pular a confirmação interativa:
+#   ansible-playbook -i inventory.ini reset.yml -e "confirm=yes"
+#
+# Para customizar o nome do workspace ou dados do admin:
+#   ansible-playbook -i inventory.ini reset.yml -e "workspace_name='Minha Empresa' admin_name='Admin' admin_email='admin@empresa.com' confirm=yes"
+#
+# Para resetar no Modo Wizard (deixa a tela de setup web aberta no navegador):
+#   ansible-playbook -i inventory.ini reset.yml -e "wizard=true confirm=yes"
+# ==============================================================================
+
+- name: Resetar Instalação do Outline
+  hosts: outline
+  become: true
+  vars_prompt:
+    - name: confirm_reset
+      prompt: "PERIGO: Isso ira APAGAR todo o banco de dados e dados do Outline! Deseja continuar? (digite 'yes' para prosseguir)"
+      private: false
+
+  vars:
+    outline_service_name: outline
+    outline_env_file: "{{ outline_install_dir }}/.env"
+    workspace_name: "{{ initial_workspace_name | default('Cloud Ace Brasil') }}"
+    admin_name: "{{ initial_admin_name | default('Sandro Cicero') }}"
+    admin_email: "{{ initial_admin_email | default('devopsvanillaofficial@gmail.com') }}"
+    wizard_mode: "{{ wizard | default(false) | bool }}"
+
+  tasks:
+    - name: Validar confirmação de segurança
+      ansible.builtin.fail:
+        msg: "Operação de reset cancelada. Nenhuma alteração foi realizada no servidor."
+      when:
+        - confirm_reset | default('') != 'yes'
+        - confirm | default('') != 'yes'
+
+    # -------------------------------------------------------------------------
+    # 1. Parar o serviço do Outline
+    # -------------------------------------------------------------------------
+    - name: Parar serviço do Outline
+      ansible.builtin.service:
+        name: "{{ outline_service_name }}"
+        state: stopped
+
+    # -------------------------------------------------------------------------
+    # 2. Resetar o Banco de Dados PostgreSQL
+    # -------------------------------------------------------------------------
+    - name: Encerrar conexões ativas com o banco de dados do Outline
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -c
+          - "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{{ outline_postgres_db }}' AND pid <> pg_backend_pid();"
+      become_user: postgres
+      failed_when: false
+
+    - name: Dropar banco de dados existente do Outline
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -c
+          - "DROP DATABASE IF EXISTS {{ outline_postgres_db }};"
+      become_user: postgres
+
+    - name: Recriar banco de dados vazio do Outline com owner correto
+      ansible.builtin.command:
+        argv:
+          - psql
+          - -c
+          - "CREATE DATABASE {{ outline_postgres_db }} OWNER {{ outline_postgres_user }};"
+      become_user: postgres
+
+    # -------------------------------------------------------------------------
+    # 3. Limpar Cache do Redis
+    # -------------------------------------------------------------------------
+    - name: Limpar cache e dados de sessão no Redis
+      ansible.builtin.command: redis-cli flushall
+
+    # -------------------------------------------------------------------------
+    # 4. Executar Migrações no Banco Limpo
+    # -------------------------------------------------------------------------
+    - name: Executar migrações do Outline (yarn db:migrate)
+      ansible.builtin.command: yarn db:migrate
+      args:
+        chdir: "{{ outline_install_dir }}"
+      become_user: "{{ outline_system_user }}"
+      environment:
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+        NODE_ENV: "production"
+
+    # -------------------------------------------------------------------------
+    # 5. Ajustar Configurações de Autenticação (.env)
+    # -------------------------------------------------------------------------
+    - name: "[Modo Wizard] Comentar credenciais Google OAuth no .env para exibir o assistente web"
+      ansible.builtin.replace:
+        path: "{{ outline_env_file }}"
+        regexp: '^(GOOGLE_CLIENT_(ID|SECRET)=.*)'
+        replace: '# \1'
+      when: wizard_mode
+
+    - name: "[Modo Automático] Garantir credenciais Google OAuth ativas no .env"
+      ansible.builtin.replace:
+        path: "{{ outline_env_file }}"
+        regexp: '^#\s*(GOOGLE_CLIENT_(ID|SECRET)=.*)'
+        replace: '\1'
+      when: not wizard_mode
+
+    # -------------------------------------------------------------------------
+    # 6. Iniciar Serviço do Outline
+    # -------------------------------------------------------------------------
+    - name: Iniciar serviço do Outline
+      ansible.builtin.service:
+        name: "{{ outline_service_name }}"
+        state: started
+
+    - name: Aguardar o Outline responder localmente na porta configurada
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ outline_port | default(3000) }}"
+        timeout: 60
+        delay: 4
+
+    # -------------------------------------------------------------------------
+    # 7. Provisionamento do Workspace (Apenas no Modo Automático)
+    # -------------------------------------------------------------------------
+    - name: "[Modo Automático] Criar Workspace e Administrador via API local"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ outline_port | default(3000) }}/api/installation.create"
+        method: POST
+        body_format: json
+        headers:
+          Content-Type: "application/json"
+          Host: "{{ outline_domain }}"
+          X-Forwarded-Proto: "https"
+        body:
+          teamName: "{{ workspace_name }}"
+          userName: "{{ admin_name }}"
+          userEmail: "{{ admin_email }}"
+        status_code:
+          - 200
+          - 201
+      when: not wizard_mode
+
+    # -------------------------------------------------------------------------
+    # 8. Relatório Final
+    # -------------------------------------------------------------------------
+    - name: Exibir resumo da inicialização
+      ansible.builtin.debug:
+        msg: >
+          {% if wizard_mode %}
+          ================================================================================
+          [RESET CONCLUÍDO - MODO WIZARD WEB ATIVO]
+          O Outline foi reiniciado com sucesso com o banco limpo.
+          1. Abra no navegador: {{ outline_url }}
+          2. Preencha o formulário de boas-vindas para criar seu Workspace e Usuário.
+          3. Em seguida, reative o Google OAuth rodando:
+             ansible-playbook -i inventory.ini playbook.yml
+          ================================================================================
+          {% else %}
+          ================================================================================
+          [RESET CONCLUÍDO - MODO AUTOMÁTICO]
+          O Outline foi totalmente resetado e o Workspace já foi provisionado!
+          - Workspace Criado: {{ workspace_name }}
+          - Administrador: {{ admin_name }} ({{ admin_email }})
+          - URL de Acesso: {{ outline_url }}
+
+          Como acessar:
+          Acesse {{ outline_url }} no navegador e clique em "Continue with Google"
+          usando a conta {{ admin_email }}. O login ocorrerá diretamente como Admin!
+          ================================================================================
+          {% endif %}

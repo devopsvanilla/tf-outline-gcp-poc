@@ -1,20 +1,105 @@
-outline_repo_url: "https://github.com/outline/outline.git"
-outline_repo_version: "main"
-outline_install_dir: "/opt/outline/app"
-outline_system_user: "outline"
-outline_port: 3000
-outline_url: "http://203.0.113.10:3000"
-outline_allowed_hosts: "203.0.113.10"
-outline_secret_key: "troque-por-um-secret-key-forte"
-outline_utils_secret: "troque-por-um-utils-secret-forte"
-outline_bucket_name: "troque-pelo-output-do-terraform"
-outline_google_credentials_path: "/etc/outline/gcp-service-account.json"
-outline_google_credentials_json: |
-  {
-    "type": "service_account",
-    "project_id": "meu-projeto-gcp"
-  }
+# ==============================================================================
+# Configuração de variáveis do Ansible para o Outline na GCP (e2-micro Free Tier)
+# ==============================================================================
 
+# URL pública e FQDN de acesso ao Outline
+# Se estiver usando apenas IP:
+#   outline_domain: "_"
+#   outline_url: "http://203.0.113.10"
+#   outline_force_https: "false"
+#
+# Se estiver usando um FQDN (ex: wiki.meudominio.com):
+#   outline_domain: "wiki.meudominio.com"
+#   outline_url: "https://wiki.meudominio.com"
+#   outline_force_https: "true"
+#   enable_ssl: true
+#   certbot_email: "admin@meudominio.com"
+outline_domain: "_"
+outline_url: "http://203.0.113.10"
+outline_port: 3000
+outline_allowed_hosts: "*"
+outline_force_https: "false"
+
+# Emissão automática de SSL gratuito via Let's Encrypt para o FQDN
+# (Requer que o registro DNS tipo A do seu FQDN já esteja apontando para o IP da VM)
+enable_ssl: false
+certbot_email: "admin@meudominio.com"
+
+# Segredos da aplicação (gere com: openssl rand -hex 32)
+outline_secret_key: "troque-por-um-secret-key-forte-de-32-bytes"
+outline_utils_secret: "troque-por-um-utils-secret-forte-de-32-bytes"
+
+# Configuração do Cloud Storage (obtido dos outputs do Terraform)
+# terraform output bucket_name
+outline_bucket_name: "outline-poc-abc123"
+# terraform output bucket_region
+outline_bucket_region: "us-central1"
+# terraform output outline_storage_access_key
+outline_storage_access_key: "GOOG1EEXAMPLEKEYID"
+# terraform output -raw outline_storage_secret_key
+outline_storage_secret_key: "exampleSecretKeyGeneratedByTerraformHMAC"
+outline_storage_upload_method: "put"
+
+# Banco de Dados PostgreSQL Local (nativo na VM)
 outline_postgres_db: "outline"
 outline_postgres_user: "outline"
-outline_postgres_password: "troque-esta-senha"
+outline_postgres_password: "troque-esta-senha-segura"
+
+# Configuração do Sistema e Diretórios
+outline_install_dir: "/opt/outline/app"
+outline_system_user: "outline"
+outline_swap_size_mb: 4096
+
+# Repositório do Outline (usado se não houver pacote compilado localmente em ansible/files/)
+outline_repo_url: "https://github.com/outline/outline.git"
+outline_repo_version: "main"
+
+# Nome do arquivo de build local caso use a compilação no host
+outline_local_build_tarball: "files/outline-build.tar.gz"
+
+# ==============================================================================
+# Autenticação Google OAuth (Obrigatório para login no Outline - ver Google-OAuth-Setup.md)
+# ==============================================================================
+# outline_google_client_id: "SEU_CLIENT_ID.apps.googleusercontent.com"
+# outline_google_client_secret: "GOCSPX-SEU_CLIENT_SECRET"
+
+# ==============================================================================
+# Integração GitHub (Link Unfurling para Issues, PRs e Projects - ver GitHub-Integration-Setup.md)
+# ==============================================================================
+# outline_github_app_name: "outline-devopsvanilla-poc"
+# outline_github_app_id: "1234567"
+# outline_github_client_id: "Iv1.xxxxxxxxxxxxxxxx"
+# outline_github_client_secret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+# outline_github_app_private_key: "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFc..."
+# outline_github_webhook_secret: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+
+# ==============================================================================
+# Envio de E-mails / SMTP (Opcional - para convites e notificações)
+# ==============================================================================
+# outline_smtp_host: "smtp.gmail.com"
+# outline_smtp_port: 587
+# outline_smtp_secure: false
+# outline_smtp_username: "seu-email@gmail.com"
+# outline_smtp_password: "sua-senha-de-app-16-letras"
+# outline_smtp_from_email: "seu-email@gmail.com"
+
+# ==============================================================================
+# Dados do Workspace Inicial (utilizados na automação de reset.yml)
+# ==============================================================================
+# initial_workspace_name: "Cloud Ace Brasil"
+# initial_admin_name: "Sandro Cicero"
+# initial_admin_email: "seu-email@gmail.com"
+
+# ==============================================================================
+# Configurações do diagrams.net (draw.io)
+# ==============================================================================
+# drawio_domain: "drawio.meudominio.com"
+# drawio_url: "https://drawio.meudominio.com"
+# drawio_enable_ssl: false
+# drawio_certbot_email: "seu-email@meudominio.com"
+# drawio_install_dir: "/var/www/drawio"
+# drawio_repo_url: "https://github.com/jgraph/drawio.git"
+# drawio_repo_version: "dev"
+# drawio_swap_size_mb: 2048
+

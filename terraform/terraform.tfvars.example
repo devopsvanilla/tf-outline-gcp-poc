@@ -1,0 +1,34 @@
+# Configuração de variáveis para o ambiente GCP (Always Free Tier)
+project_id         = "meu-projeto-gcp"
+region             = "us-central1"
+zone               = "us-central1-a"
+bucket_name_prefix = "outline-poc"
+instance_name      = "outline-vm"
+static_ip_name     = null
+machine_type       = "e2-micro"
+boot_disk_size     = 30
+boot_disk_type     = "pd-standard"
+network            = "default"
+ssh_source_ranges  = ["0.0.0.0/0"]
+web_source_ranges  = ["0.0.0.0/0"]
+
+# Opcional: se omitido ou null, usa a conta já autenticada na estação via `gcloud auth application-default login`
+# credentials_file = null
+
+# Usuário POSIX do OS Login para conexão do Ansible (consulte com: gcloud compute os-login describe-profile)
+ssh_user = "seu_usuario_gmail_com"
+
+# Opcional: FQDN para acesso ao Outline (ex: wiki.meudominio.com). Se omitido/null, usa o IP público.
+# domain_name = "wiki.meudominio.com"
+
+# ==============================================================================
+# Configurações para a VM do diagrams.net (draw.io)
+# ==============================================================================
+# enable_drawio_vm      = true
+# drawio_instance_name  = "drawio-vm"
+# drawio_static_ip_name = null
+# drawio_machine_type   = "e2-micro"
+# drawio_boot_disk_size = 20
+# drawio_boot_disk_type = "pd-standard"
+# drawio_domain_name    = "drawio.meudominio.com"
+
